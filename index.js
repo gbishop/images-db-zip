@@ -39,6 +39,8 @@ async function main() {
       <p>You can Import the images and json here.</p>
       <label for="import">Import</label>
       <input id="import" type="file" accept=".zip" onchange=${importZip} />
+      <label for="importurl">Remote import</label>
+      <input id="importurl" type="url" onchange=${importUrl} />
       <p>You can clear the db here.</p>
       <button onclick=${clearDb}>Clear</button>
       <p>The images should appear here.</p>
@@ -137,6 +139,32 @@ async function importZip(event) {
   /* this is quite a dance, are all these steps required? */
   const zipped = input.files[0];
   const zippedBuf = await readAsArrayBuffer(zipped);
+  const zippedArray = new Uint8Array(zippedBuf);
+  const unzipped = unzipSync(zippedArray);
+  for (const fname in unzipped) {
+    if (fname.endsWith("json")) {
+      const text = strFromU8(unzipped[fname]);
+      const obj = JSON.parse(text);
+      console.log("json", obj);
+    } else if (fname.endsWith(".png")) {
+      const blob = new Blob([unzipped[fname]], { type: "image/png" });
+      await addImage(blob, fname);
+    }
+  }
+  main();
+}
+
+/** Import a zip from a URL
+ * @param {InputEvent} event */
+async function importUrl(event) {
+  const input = /** @type {HTMLInputElement} */ (event.target);
+  if (!input || !input.value) {
+    console.log("no url provided");
+    return;
+  }
+  /* this is quite a dance, are all these steps required? */
+  const resp = await fetch(input.value);
+  const zippedBuf = await resp.arrayBuffer();
   const zippedArray = new Uint8Array(zippedBuf);
   const unzipped = unzipSync(zippedArray);
   for (const fname in unzipped) {

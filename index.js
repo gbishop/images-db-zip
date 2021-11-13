@@ -1,6 +1,6 @@
 import { html, render } from "uhtml";
 import { openDB } from "idb";
-import { zipSync, strToU8 } from "fflate";
+import { zipSync, strToU8, unzipSync, strFromU8 } from "fflate";
 
 const dbp = openDB("db", 1, {
   upgrade(db) {
@@ -11,16 +11,22 @@ const dbp = openDB("db", 1, {
 });
 
 async function main() {
-  const values = await (await dbp).getAll("images");
+  // display the images from the db to show they are there
+  const db = await dbp;
+  const values = await db.getAll("images");
   const imgs = values.map((value) => {
     const img = new Image();
     img.src = URL.createObjectURL(value.content);
     img.title = value.name;
     return img;
   });
+  // allow uploading images, exporting and importing zip with images
   render(
     document.body,
-    html`<label for="images">Upload some images</label>
+    html`<p>
+        Upload multiple images by with shift click. They should appear below.
+      </p>
+      <label for="images">Upload some images</label>
       <input
         id="images"
         type="file"
@@ -28,66 +34,129 @@ async function main() {
         accept=".png,.jpg"
         onchange=${addImages}
       />
-      <button onclick=${createZip}>Export</button>
+      <p>You can Export the images along with some fake json in a Zip file.</p>
+      <button onclick=${exportZip}>Export</button>
+      <p>You can Import the images and json here.</p>
+      <label for="import">Import</label>
+      <input id="import" type="file" accept=".zip" onchange=${importZip} />
+      <p>You can clear the db here.</p>
+      <button onclick=${clearDb}>Clear</button>
+      <p>The images should appear here.</p>
       <div>${imgs}</div>`
   );
 }
 
-/** @param {InputEvent} event */
+/** Add an image to the db
+ * @param {Blob} blob
+ * @param {string} name
+ */
+async function addImage(blob, name) {
+  const db = await dbp;
+  const h = await hash(blob);
+  const test = await db.get("images", h);
+  if (test) {
+    console.log(name, "is dup");
+  } else {
+    await db.put("images", {
+      name: name,
+      content: blob,
+      hash: h,
+    });
+  }
+}
+
+/**
+ * Add images from the file input to the database
+ * @param {InputEvent} event */
 async function addImages(event) {
   const input = /** @type {HTMLInputElement} */ (event.target);
   if (!input || !input.files || !input.files.length) {
     console.log("no files selected");
     return;
   }
-  const db = await dbp;
   for (const file of input.files) {
-    const h = file.size; // await hash(file);
-    console.log(file.name, h);
-    const test = await db.get("images", h);
-    if (test) {
-      console.log(file.name, "is dup");
-    } else {
-      await db.add("images", {
-        name: file.name,
-        content: file,
-        hash: h,
-      });
-    }
+    await addImage(file, file.name);
   }
   main();
 }
 
-function hash(blob) {
+/** Convert a blob into an array buffer
+ * @param {Blob} blob */
+function readAsArrayBuffer(blob) {
   return new Promise((resolve) => {
     const fr = new FileReader();
-    fr.onloadend = () =>
-      fr.result instanceof ArrayBuffer &&
-      resolve(crypto.subtle.digest("SHA-256", fr.result));
+    fr.onloadend = () => fr.result instanceof ArrayBuffer && resolve(fr.result);
     fr.readAsArrayBuffer(blob);
   });
 }
 
-async function createZip() {
+/** Compute the hash of a blob for de-duping the database
+ * @param {Blob} blob */
+async function hash(blob) {
+  const buf = await readAsArrayBuffer(blob);
+  return crypto.subtle.digest("SHA-256", buf);
+}
+
+/** Create a zip file with some json and image content */
+async function exportZip() {
+  // fake up some json content for testing
   const json = { stuff: "here" };
+  const zipargs = { "design.json": strToU8(JSON.stringify(json)) };
+  // grab all the images
   const db = await dbp;
   const values = await db.getAll("images");
-  const zipargs = { json: strToU8(JSON.stringify(json)) };
+  // for each image convert to Uint8Array and add to the zip args
   for (const value of values) {
     const contentBuf = await value.content.arrayBuffer();
     const content = new Uint8Array(contentBuf);
     zipargs[value.name] = [content, { level: 0 }];
   }
-  console.log(zipargs);
+  // zip it
   const zip = zipSync(zipargs);
+  // create a blob from the zipped result
   const blob = new Blob([zip], { type: "application/octet-stream" });
+  // create an object url for it
   const url = URL.createObjectURL(blob);
+  // create a download link and click it
   const a = document.createElement("A");
   a.setAttribute("href", url);
   a.setAttribute("download", "export.zip");
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
+}
+
+/** Import a zip like the one created above
+ * @param {InputEvent} event */
+async function importZip(event) {
+  const input = /** @type {HTMLInputElement} */ (event.target);
+  if (!input || !input.files || !input.files.length) {
+    console.log("no files selected");
+    return;
+  }
+  /* this is quite a dance, are all these steps required? */
+  const zipped = input.files[0];
+  const zippedBuf = await readAsArrayBuffer(zipped);
+  const zippedArray = new Uint8Array(zippedBuf);
+  const unzipped = unzipSync(zippedArray);
+  for (const fname in unzipped) {
+    if (fname.endsWith("json")) {
+      const text = strFromU8(unzipped[fname]);
+      const obj = JSON.parse(text);
+      console.log("json", obj);
+    } else if (fname.endsWith(".png")) {
+      const blob = new Blob([unzipped[fname]], { type: "image/png" });
+      await addImage(blob, fname);
+    }
+  }
+  main();
+}
+
+/** Clear the images store in the db */
+async function clearDb() {
+  const db = await dbp;
+  await db.clear("images");
+  main();
 }
 
 main();

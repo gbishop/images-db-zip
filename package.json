@@ -9,6 +9,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "browser-fs-access": "^0.21.1",
     "fflate": "^0.7.1",
     "idb": "^6.1.5",
     "uhtml": "^2.7.6",

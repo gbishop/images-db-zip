@@ -1,6 +1,7 @@
 import { html, render } from "uhtml";
 import { openDB } from "idb";
 import { zipSync, strToU8, unzipSync, strFromU8 } from "fflate";
+import { fileOpen, fileSave, supported } from "browser-fs-access";
 
 const dbp = openDB("db", 1, {
   upgrade(db) {
@@ -23,7 +24,11 @@ async function main() {
   // allow uploading images, exporting and importing zip with images
   render(
     document.body,
-    html`<p>
+    html`<p>You can open an existing design</p>
+      <button onclick=${openDesign}>Open</button>
+      <p>And you should be able to save back to it later.</p>
+      <button onclick=${saveDesign}>Save</button>
+      <p>
         Upload multiple images by with shift click. They should appear below.
       </p>
       <label for="images">Upload some images</label>
@@ -46,6 +51,69 @@ async function main() {
       <p>The images should appear here.</p>
       <div>${imgs}</div>`
   );
+}
+
+/** @type {import("browser-fs-access").FileSystemHandle | undefined} */
+let existingHandle;
+/** @type {string} */
+let existingName;
+
+async function openDesign() {
+  const blob = await fileOpen({
+    mimeTypes: ["application/zip"],
+    extensions: [".osdpi", ".zip"],
+    description: "OS-DPI designs",
+    id: "os-dpi",
+  });
+  // keep the handle so we can save to it later
+  existingHandle = blob.handle;
+  existingName = blob.name;
+
+  // clear the previous one
+  const db = await dbp;
+  await db.clear("images");
+  // load the new one
+  const zippedBuf = await readAsArrayBuffer(blob);
+  const zippedArray = new Uint8Array(zippedBuf);
+  const unzipped = unzipSync(zippedArray);
+  for (const fname in unzipped) {
+    if (fname.endsWith("json")) {
+      const text = strFromU8(unzipped[fname]);
+      const obj = JSON.parse(text);
+      console.log("json", obj);
+    } else if (fname.endsWith(".png")) {
+      const blob = new Blob([unzipped[fname]], { type: "image/png" });
+      await addImage(blob, fname);
+    }
+  }
+  // show what we loaded
+  main();
+}
+
+async function saveDesign() {
+  // fake up some json content for testing
+  const json = { stuff: "here" };
+  const zipargs = { "design.json": strToU8(JSON.stringify(json)) };
+  // grab all the images
+  const db = await dbp;
+  const values = await db.getAll("images");
+  // for each image convert to Uint8Array and add to the zip args
+  for (const value of values) {
+    const contentBuf = await value.content.arrayBuffer();
+    const content = new Uint8Array(contentBuf);
+    zipargs[value.name] = [content, { level: 0 }];
+  }
+  // zip it
+  const zip = zipSync(zipargs);
+  // create a blob from the zipped result
+  const blob = new Blob([zip], { type: "application/zip" });
+  const options = {
+    fileName: existingName,
+    extensions: [".osdpi", ".zip"],
+    id: "osdpi",
+  };
+  await fileSave(blob, options, existingHandle);
+  console.log("saved file");
 }
 
 /** Add an image to the db
